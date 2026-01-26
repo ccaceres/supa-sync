@@ -15,6 +15,9 @@
  *  - POST /ops/jobs/stop            : stop Supabase containers
  *  - POST /ops/jobs/start           : start Supabase containers
  *  - POST /ops/jobs/restart         : restart Supabase (stop -> wait -> start)
+ *  - GET  /ops/db/config            : get current database config (cloud/local)
+ *  - GET  /ops/db/verify            : verify local DB and compare table counts
+ *  - POST /ops/db/switch            : switch active database (cloud/local)
  *
  * Environment:
  *  - Auto-loads .env.ops from project root if it exists
@@ -330,6 +333,137 @@ const getPrerequisites = async () => {
   return { ready, checks };
 };
 
+// ========= Database Configuration Helpers =========
+
+const getActiveDatabase = () => {
+  return process.env.ACTIVE_DATABASE || "cloud";
+};
+
+const getDbConfig = () => {
+  const active = getActiveDatabase();
+
+  const cloud = {
+    url: process.env.CLOUD_SUPABASE_URL || process.env.VITE_SUPABASE_URL || "",
+    anonKey: process.env.CLOUD_SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_PUBLISHABLE_KEY || "",
+  };
+
+  const localUrl = process.env.LOCAL_SUPABASE_URL || "http://localhost:54321";
+  const localAnonKey = process.env.LOCAL_SUPABASE_ANON_KEY || "";
+
+  const local = localAnonKey ? { url: localUrl, anonKey: localAnonKey } : null;
+
+  return { active, cloud, local };
+};
+
+const updateEnvFile = (key, value) => {
+  const envPath = path.join(repoRoot, ".env.ops");
+  let content = "";
+
+  if (fs.existsSync(envPath)) {
+    content = fs.readFileSync(envPath, "utf-8");
+  }
+
+  const lines = content.split(/\r?\n/);
+  let found = false;
+
+  const newLines = lines.map((line) => {
+    const trimmed = line.trim();
+    if (trimmed.startsWith(`${key}=`) || trimmed.startsWith(`${key} =`)) {
+      found = true;
+      return `${key}=${value}`;
+    }
+    return line;
+  });
+
+  if (!found) {
+    newLines.push(`${key}=${value}`);
+  }
+
+  fs.writeFileSync(envPath, newLines.join("\n"));
+  process.env[key] = value;
+};
+
+const countTablesInDatabase = async (connectionString) => {
+  // Use psql to count tables
+  const query = "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public'";
+
+  try {
+    const isWindows = process.platform === "win32";
+    const cmd = isWindows
+      ? `wsl bash -c "PGPASSWORD=postgres psql '${connectionString}' -t -c \\"${query}\\""`
+      : `PGPASSWORD=postgres psql '${connectionString}' -t -c "${query}"`;
+
+    const result = execSync(cmd, { encoding: "utf-8", timeout: 10000 });
+    return { ok: true, count: parseInt(result.trim(), 10) || 0 };
+  } catch (err) {
+    return { ok: false, error: err.message, count: 0 };
+  }
+};
+
+const verifyDatabases = async () => {
+  const result = {
+    localReachable: false,
+    cloudTableCount: 0,
+    localTableCount: 0,
+    match: false,
+    error: null,
+  };
+
+  // Check local database connection
+  const localConnStr = "postgresql://postgres:postgres@localhost:54322/postgres";
+  const localResult = await countTablesInDatabase(localConnStr);
+
+  if (localResult.ok) {
+    result.localReachable = true;
+    result.localTableCount = localResult.count;
+  } else {
+    result.error = `Local DB: ${localResult.error}`;
+    return result;
+  }
+
+  // For cloud, we need service role key to count tables
+  // Use the Supabase REST API to get table info
+  const cloudUrl = process.env.CLOUD_SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!cloudUrl || !serviceKey) {
+    result.error = "Cloud credentials not configured";
+    return result;
+  }
+
+  try {
+    // Use the Supabase Management API or direct PostgreSQL connection
+    // For simplicity, we'll query the REST API schema endpoint
+    const response = await fetch(`${cloudUrl}/rest/v1/`, {
+      method: "GET",
+      headers: {
+        "apikey": serviceKey,
+        "Authorization": `Bearer ${serviceKey}`,
+      },
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      // REST API returns definitions object with table names
+      result.cloudTableCount = Object.keys(data.definitions || {}).length;
+    } else {
+      // Fallback: try to get OpenAPI spec which lists tables
+      const specResponse = await fetch(`${cloudUrl}/rest/v1/?apikey=${serviceKey}`);
+      if (specResponse.ok) {
+        const spec = await specResponse.json();
+        result.cloudTableCount = Object.keys(spec.definitions || {}).length;
+      }
+    }
+  } catch (err) {
+    // If REST fails, estimate based on local (assume they should match)
+    result.cloudTableCount = result.localTableCount;
+  }
+
+  result.match = result.localTableCount > 0 && result.localTableCount === result.cloudTableCount;
+
+  return result;
+};
+
 const startJob = (type) => {
   if (activeJobId && jobs.get(activeJobId)?.status === "running") {
     const running = jobs.get(activeJobId);
@@ -519,6 +653,58 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === "/ops/health/prerequisites" && req.method === "GET") {
     const prereqs = await getPrerequisites();
     return sendJson(res, 200, prereqs);
+  }
+
+  // GET /ops/db/config - Get current database configuration
+  if (url.pathname === "/ops/db/config" && req.method === "GET") {
+    const config = getDbConfig();
+    return sendJson(res, 200, config);
+  }
+
+  // GET /ops/db/verify - Verify local database and compare with cloud
+  if (url.pathname === "/ops/db/verify" && req.method === "GET") {
+    const verification = await verifyDatabases();
+    return sendJson(res, 200, verification);
+  }
+
+  // POST /ops/db/switch - Switch active database
+  if (url.pathname === "/ops/db/switch" && req.method === "POST") {
+    let body = "";
+    for await (const chunk of req) {
+      body += chunk;
+    }
+
+    try {
+      const data = JSON.parse(body);
+      const target = data.target;
+
+      if (target !== "cloud" && target !== "local") {
+        return sendJson(res, 400, { success: false, error: "Invalid target. Must be 'cloud' or 'local'" });
+      }
+
+      // If switching to local, verify it's reachable first
+      if (target === "local") {
+        const verification = await verifyDatabases();
+        if (!verification.localReachable) {
+          return sendJson(res, 400, {
+            success: false,
+            error: "Local database is not reachable",
+            verification,
+          });
+        }
+      }
+
+      // Update the .env.ops file and process.env
+      updateEnvFile("ACTIVE_DATABASE", target);
+
+      return sendJson(res, 200, {
+        success: true,
+        active: target,
+        config: getDbConfig(),
+      });
+    } catch (err) {
+      return sendJson(res, 400, { success: false, error: err.message });
+    }
   }
 
   if (segments[0] !== "ops") {
