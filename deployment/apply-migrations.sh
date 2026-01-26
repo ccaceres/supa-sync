@@ -16,13 +16,19 @@ info() { printf "    %s\n" "$*"; }
 warn() { printf "[!] %s\n" "$*" >&2; }
 die()  { printf "[x] %s\n" "$*" >&2; exit 1; }
 
+# Verbose psql - shows output/errors (for migrations)
 psql_local() {
   PGPASSWORD="${LOCAL_DB_PASS:-postgres}" psql \
     -h "${LOCAL_DB_HOST:-127.0.0.1}" \
     -p "${LOCAL_DB_PORT:-54322}" \
     -U "${LOCAL_DB_USER:-postgres}" \
     -d "${LOCAL_DB_NAME:-postgres}" \
-    -q "$@" 2>/dev/null
+    "$@"
+}
+
+# Quiet psql - suppresses output (for checks)
+psql_quiet() {
+  psql_local -q "$@" 2>/dev/null
 }
 
 # ========= CHECKS =========
@@ -47,7 +53,7 @@ check_supabase_running() {
   fi
 
   # Verify DB connection (most important check)
-  if ! psql_local -c "SELECT 1" >/dev/null 2>&1; then
+  if ! psql_quiet -c "SELECT 1" >/dev/null 2>&1; then
     die "Cannot connect to local database on port ${LOCAL_DB_PORT:-54322}"
   fi
 
@@ -81,7 +87,7 @@ apply_migrations() {
 
   # Reset public schema (clean slate)
   log "Resetting public schema..."
-  psql_local -c "DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public; GRANT ALL ON SCHEMA public TO postgres; GRANT ALL ON SCHEMA public TO public;" || die "Failed to reset public schema"
+  psql_quiet -c "DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public; GRANT ALL ON SCHEMA public TO postgres; GRANT ALL ON SCHEMA public TO public;" || die "Failed to reset public schema"
 
   # Apply each migration file in order
   log "Applying migration files..."
@@ -93,7 +99,7 @@ apply_migrations() {
     local filename=$(basename "$migration_file")
     info "Applying: ${filename}"
 
-    if psql_local -f "$migration_file" 2>&1; then
+    if psql_local -f "$migration_file"; then
       ((applied++))
     else
       warn "Failed to apply: ${filename}"
@@ -119,32 +125,32 @@ verify_schema() {
 
   # Count tables
   local table_count
-  table_count=$(psql_local -t -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public'" 2>/dev/null | tr -d ' ')
+  table_count=$(psql_quiet -t -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public'" 2>/dev/null | tr -d ' ')
   info "Tables created: ${table_count:-0}"
 
   # Count RLS policies
   local policy_count
-  policy_count=$(psql_local -t -c "SELECT COUNT(*) FROM pg_policies WHERE schemaname='public'" 2>/dev/null | tr -d ' ')
+  policy_count=$(psql_quiet -t -c "SELECT COUNT(*) FROM pg_policies WHERE schemaname='public'" 2>/dev/null | tr -d ' ')
   info "RLS policies: ${policy_count:-0}"
 
   # Count triggers
   local trigger_count
-  trigger_count=$(psql_local -t -c "SELECT COUNT(*) FROM information_schema.triggers WHERE trigger_schema='public'" 2>/dev/null | tr -d ' ')
+  trigger_count=$(psql_quiet -t -c "SELECT COUNT(*) FROM information_schema.triggers WHERE trigger_schema='public'" 2>/dev/null | tr -d ' ')
   info "Triggers: ${trigger_count:-0}"
 
   # Count functions
   local function_count
-  function_count=$(psql_local -t -c "SELECT COUNT(*) FROM information_schema.routines WHERE routine_schema='public'" 2>/dev/null | tr -d ' ')
+  function_count=$(psql_quiet -t -c "SELECT COUNT(*) FROM information_schema.routines WHERE routine_schema='public'" 2>/dev/null | tr -d ' ')
   info "Functions: ${function_count:-0}"
 
   # Count indexes
   local index_count
-  index_count=$(psql_local -t -c "SELECT COUNT(*) FROM pg_indexes WHERE schemaname='public'" 2>/dev/null | tr -d ' ')
+  index_count=$(psql_quiet -t -c "SELECT COUNT(*) FROM pg_indexes WHERE schemaname='public'" 2>/dev/null | tr -d ' ')
   info "Indexes: ${index_count:-0}"
 
   # Count custom types
   local type_count
-  type_count=$(psql_local -t -c "SELECT COUNT(*) FROM pg_type t JOIN pg_namespace n ON t.typnamespace = n.oid WHERE n.nspname = 'public' AND t.typtype = 'e'" 2>/dev/null | tr -d ' ')
+  type_count=$(psql_quiet -t -c "SELECT COUNT(*) FROM pg_type t JOIN pg_namespace n ON t.typnamespace = n.oid WHERE n.nspname = 'public' AND t.typtype = 'e'" 2>/dev/null | tr -d ' ')
   info "Custom types (enums): ${type_count:-0}"
 }
 
