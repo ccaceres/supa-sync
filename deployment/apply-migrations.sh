@@ -79,13 +79,38 @@ apply_migrations() {
 
   cd "${REPO_ROOT}"
 
-  # Run db reset which applies all migrations
-  # --linked=false ensures we use the local database, not a linked remote
-  if npx --yes supabase db reset --linked=false; then
-    log "Migrations applied successfully!"
-  else
-    die "Migration failed. Check the output above for errors."
+  # Reset public schema (clean slate)
+  log "Resetting public schema..."
+  psql_local -c "DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public; GRANT ALL ON SCHEMA public TO postgres; GRANT ALL ON SCHEMA public TO public;" || die "Failed to reset public schema"
+
+  # Apply each migration file in order
+  log "Applying migration files..."
+  local migration_dir="${REPO_ROOT}/supabase/migrations"
+  local applied=0
+  local failed=0
+
+  for migration_file in $(ls -1 "${migration_dir}"/*.sql 2>/dev/null | sort); do
+    local filename=$(basename "$migration_file")
+    info "Applying: ${filename}"
+
+    if psql_local -f "$migration_file" 2>&1; then
+      ((applied++))
+    else
+      warn "Failed to apply: ${filename}"
+      ((failed++))
+      # Continue with other migrations to see full scope of issues
+    fi
+  done
+
+  echo ""
+  info "Applied: ${applied} migrations"
+
+  if [ "$failed" -gt 0 ]; then
+    warn "Failed: ${failed} migrations"
+    die "Migration completed with errors. Check the output above."
   fi
+
+  log "Migrations applied successfully!"
 }
 
 # ========= VERIFICATION =========
