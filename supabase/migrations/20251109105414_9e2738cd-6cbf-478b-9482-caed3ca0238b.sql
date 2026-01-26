@@ -1,0 +1,55 @@
+-- Phase 1: Add cost storage columns to equipment table
+
+-- Add OpEx cost columns (lease + maintenance costs per year)
+ALTER TABLE equipment 
+  ADD COLUMN IF NOT EXISTS opex_cost_year_1 NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS opex_cost_year_2 NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS opex_cost_year_3 NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS opex_cost_year_4 NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS opex_cost_year_5 NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS opex_cost_year_6 NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS opex_cost_year_7 NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS opex_cost_year_8 NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS opex_cost_year_9 NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS opex_cost_year_10 NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS opex_cost_year_11 NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS opex_cost_year_12 NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS opex_cost_year_13 NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS opex_cost_year_14 NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS opex_cost_year_15 NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS opex_cost_year_16 NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS opex_cost_year_17 NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS opex_cost_year_18 NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS opex_cost_year_19 NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS opex_cost_year_20 NUMERIC DEFAULT 0;
+
+-- Add CapEx cost columns (purchase costs per year)
+ALTER TABLE equipment 
+  ADD COLUMN IF NOT EXISTS capex_cost_year_1 NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS capex_cost_year_2 NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS capex_cost_year_3 NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS capex_cost_year_4 NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS capex_cost_year_5 NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS capex_cost_year_6 NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS capex_cost_year_7 NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS capex_cost_year_8 NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS capex_cost_year_9 NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS capex_cost_year_10 NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS capex_cost_year_11 NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS capex_cost_year_12 NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS capex_cost_year_13 NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS capex_cost_year_14 NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS capex_cost_year_15 NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS capex_cost_year_16 NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS capex_cost_year_17 NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS capex_cost_year_18 NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS capex_cost_year_19 NUMERIC DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS capex_cost_year_20 NUMERIC DEFAULT 0;
+
+-- Add metadata columns for tracking
+ALTER TABLE equipment
+  ADD COLUMN IF NOT EXISTS costs_last_calculated_at TIMESTAMP WITH TIME ZONE,
+  ADD COLUMN IF NOT EXISTS costs_calculation_version INTEGER DEFAULT 1;
+
+COMMENT ON COLUMN equipment.costs_last_calculated_at IS 'Timestamp when equipment costs were last recalculated';
+COMMENT ON COLUMN equipment.costs_calculation_version IS 'Version number for tracking calculation methodology changes';

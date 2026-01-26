@@ -1,0 +1,25 @@
+project_id = "blpqmqcyfetcwtvstvwl"
+
+[functions.ai-chat]
+verify_jwt = true
+
+[functions.get-client-ip]
+verify_jwt = false
+
+[functions.reset-user]
+verify_jwt = true
+
+[functions.reset-mfa]
+verify_jwt = true
+
+[functions.calculate-price-line-rates]
+verify_jwt = true
+
+[functions.send-location-verification]
+verify_jwt = true
+
+[functions.verify-location-access]
+verify_jwt = false
+
+[functions.send-admin-email]
+verify_jwt = true
