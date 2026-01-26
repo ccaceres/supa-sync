@@ -100,10 +100,10 @@ apply_migrations() {
     info "Applying: ${filename}"
 
     if psql_local -f "$migration_file"; then
-      ((applied++))
+      applied=$((applied + 1))
     else
       warn "Failed to apply: ${filename}"
-      ((failed++))
+      failed=$((failed + 1))
       # Continue with other migrations to see full scope of issues
     fi
   done
