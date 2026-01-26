@@ -12,6 +12,9 @@
  *  - POST /ops/jobs/clone           : run deployment/clone-supabase-data.sh
  *  - POST /ops/jobs/install         : run deployment/install-supabase-wsl.sh
  *  - POST /ops/jobs/migrate         : run deployment/apply-migrations.sh
+ *  - POST /ops/jobs/stop            : stop Supabase containers
+ *  - POST /ops/jobs/start           : start Supabase containers
+ *  - POST /ops/jobs/restart         : restart Supabase (stop -> wait -> start)
  *
  * Environment:
  *  - Auto-loads .env.ops from project root if it exists
@@ -78,6 +81,12 @@ const scriptPaths = {
   migrate: path.join(repoRoot, "deployment", "apply-migrations.sh"),
 };
 
+// Inline commands (not script files) for Supabase control
+const inlineCommands = {
+  stop: ["npx", "--yes", "supabase", "stop"],
+  start: ["npx", "--yes", "supabase", "start"],
+};
+
 const jobs = new Map();
 let activeJobId = null;
 
@@ -132,6 +141,26 @@ const trimOldJobs = () => {
 };
 
 const buildCommand = (type) => {
+  // Check inline commands first (for Supabase control: stop, start)
+  if (inlineCommands[type]) {
+    const [cmd, ...args] = inlineCommands[type];
+    if (process.platform === "win32") {
+      return {
+        command: "wsl",
+        args: ["--cd", toWslPath(repoRoot), cmd, ...args],
+        env: { ...process.env },
+        cwd: repoRoot,
+      };
+    }
+    return {
+      command: cmd,
+      args,
+      env: { ...process.env },
+      cwd: repoRoot,
+    };
+  }
+
+  // Fall back to script-based commands
   const scriptPath = scriptPaths[type];
   if (!scriptPath || !fs.existsSync(scriptPath)) {
     throw new Error(`Script not found for job type "${type}"`);
@@ -371,6 +400,79 @@ const startJob = (type) => {
   return { job };
 };
 
+// Helper to run a command and return a promise
+const runCommandAsync = (cmd, job) => {
+  return new Promise((resolve, reject) => {
+    const childProcess = spawn(cmd.command, cmd.args, {
+      cwd: cmd.cwd,
+      env: cmd.env,
+      shell: false,
+    });
+
+    childProcess.stdout.on("data", (data) => appendLog(job, "info", data));
+    childProcess.stderr.on("data", (data) => appendLog(job, "error", data));
+
+    childProcess.on("error", (err) => {
+      reject(err);
+    });
+
+    childProcess.on("close", (code) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(`Command exited with code ${code}`));
+      }
+    });
+  });
+};
+
+// Special handler for restart (stop -> wait -> start)
+const startRestartJob = () => {
+  if (activeJobId && jobs.get(activeJobId)?.status === "running") {
+    const running = jobs.get(activeJobId);
+    return { error: "A job is already running", job: running };
+  }
+
+  const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const job = {
+    id,
+    type: "restart",
+    status: "running",
+    logs: [],
+    startedAt: toIso(),
+  };
+
+  jobs.set(id, job);
+  activeJobId = id;
+
+  const runSequential = async () => {
+    try {
+      appendLog(job, "info", "=== RESTART: Stopping Supabase ===");
+      const stopCmd = buildCommand("stop");
+      await runCommandAsync(stopCmd, job);
+
+      appendLog(job, "info", "Supabase stopped. Waiting 3 seconds before starting...");
+      await new Promise((r) => setTimeout(r, 3000));
+
+      appendLog(job, "info", "=== RESTART: Starting Supabase ===");
+      const startCmd = buildCommand("start");
+      await runCommandAsync(startCmd, job);
+
+      job.status = "success";
+      appendLog(job, "info", "Restart completed successfully!");
+    } catch (err) {
+      appendLog(job, "error", err.message || "Restart failed");
+      job.status = "error";
+    }
+    job.endedAt = toIso();
+    activeJobId = null;
+    trimOldJobs();
+  };
+
+  runSequential();
+  return { job };
+};
+
 const requireAuth = (req, res) => {
   if (!config.token) return true;
   const headerToken = req.headers["x-ops-token"] || req.headers["x-ops-api-token"];
@@ -460,6 +562,45 @@ const server = http.createServer(async (req, res) => {
     req.method === "POST"
   ) {
     const result = startJob("migrate");
+    if (result.error) {
+      return sendJson(res, 409, { error: result.error, job: getJobPayload(result.job) });
+    }
+    return sendJson(res, 202, { job: getJobPayload(result.job) });
+  }
+
+  // POST /ops/jobs/stop - Stop Supabase containers
+  if (
+    segments[1] === "jobs" &&
+    segments[2] === "stop" &&
+    req.method === "POST"
+  ) {
+    const result = startJob("stop");
+    if (result.error) {
+      return sendJson(res, 409, { error: result.error, job: getJobPayload(result.job) });
+    }
+    return sendJson(res, 202, { job: getJobPayload(result.job) });
+  }
+
+  // POST /ops/jobs/start - Start Supabase containers
+  if (
+    segments[1] === "jobs" &&
+    segments[2] === "start" &&
+    req.method === "POST"
+  ) {
+    const result = startJob("start");
+    if (result.error) {
+      return sendJson(res, 409, { error: result.error, job: getJobPayload(result.job) });
+    }
+    return sendJson(res, 202, { job: getJobPayload(result.job) });
+  }
+
+  // POST /ops/jobs/restart - Restart Supabase (stop -> wait -> start)
+  if (
+    segments[1] === "jobs" &&
+    segments[2] === "restart" &&
+    req.method === "POST"
+  ) {
+    const result = startRestartJob();
     if (result.error) {
       return sendJson(res, 409, { error: result.error, job: getJobPayload(result.job) });
     }

@@ -88,6 +88,29 @@ check_ports_free() {
   done
 }
 
+# Check if Supabase is already running
+supabase_is_running() {
+  # Check if supabase containers are running via docker
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -q 'supabase'; then
+    return 0
+  fi
+  # Also check if the API port is responding
+  if curl -s -o /dev/null -w "%{http_code}" http://localhost:54321/rest/v1/ 2>/dev/null | grep -q "200\|401"; then
+    return 0
+  fi
+  return 1
+}
+
+# Check if database is accessible
+db_is_accessible() {
+  PGPASSWORD="${LOCAL_DB_PASS:-postgres}" psql \
+    -h "${LOCAL_DB_HOST:-127.0.0.1}" \
+    -p "${LOCAL_DB_PORT:-54322}" \
+    -U "${LOCAL_DB_USER:-postgres}" \
+    -d "${LOCAL_DB_NAME:-postgres}" \
+    -c "SELECT 1" >/dev/null 2>&1
+}
+
 install_docker_gpg_key() {
   # Download GPG key to temp file first (avoids pipe issues with sudo)
   local tmp_key="/tmp/docker-gpg-key.$$"
@@ -226,8 +249,15 @@ fi
 log "Docker OK:"
 docker version --format 'Client={{.Client.Version}} Server={{.Server.Version}}' 2>/dev/null || docker version
 
-log "Checking required ports..."
-check_ports_free
+# Check if Supabase is already running
+SUPABASE_ALREADY_RUNNING=false
+if supabase_is_running; then
+  log "Supabase is already running (detected running containers)"
+  SUPABASE_ALREADY_RUNNING=true
+else
+  log "Checking required ports..."
+  check_ports_free
+fi
 
 log "Checking Node.js (need v${NODE_MAJOR_REQUIRED}+ for Supabase CLI via npm/npx)..."
 CURRENT_NODE_MAJOR="$(node_major)"
@@ -271,10 +301,25 @@ else
   log "Found ${MIGRATION_COUNT} migration files in supabase/migrations/"
 fi
 
-log "Starting Supabase stack (this will pull Docker images)..."
-npx --yes supabase start
+if [ "$SUPABASE_ALREADY_RUNNING" = true ]; then
+  log "Supabase already running - skipping start"
+  log "Verifying database connection..."
+  if db_is_accessible; then
+    log "Database connection OK"
+  else
+    warn "Database not accessible on port 54322. Containers may need restart."
+    log "Attempting to restart Supabase..."
+    npx --yes supabase stop || true
+    sleep 2
+    npx --yes supabase start
+  fi
+else
+  log "Starting Supabase stack (this will pull Docker images)..."
+  npx --yes supabase start
+fi
 
 log "Writing status to: ${SUPABASE_ROOT}/supabase-status.txt"
+mkdir -p "${SUPABASE_ROOT}"
 npx --yes supabase status | tee "${SUPABASE_ROOT}/supabase-status.txt"
 
 # Generate .env.local with captured credentials

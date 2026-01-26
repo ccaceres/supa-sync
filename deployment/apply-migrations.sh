@@ -26,16 +26,27 @@ psql_local() {
 }
 
 # ========= CHECKS =========
+# Check if Supabase containers are running via docker
+supabase_containers_running() {
+  docker ps --format '{{.Names}}' 2>/dev/null | grep -q 'supabase'
+}
+
 check_supabase_running() {
   log "Checking local Supabase is running..."
 
   cd "${REPO_ROOT}"
 
-  if ! npx --yes supabase status >/dev/null 2>&1; then
-    die "Local Supabase not running. Run install-supabase-wsl.sh first."
+  # First check: Docker containers
+  if ! supabase_containers_running; then
+    # Fallback: try supabase status (may work if containers started differently)
+    if ! npx --yes supabase status >/dev/null 2>&1; then
+      die "Local Supabase not running. Run install-supabase-wsl.sh first."
+    fi
+  else
+    info "Supabase containers detected via Docker"
   fi
 
-  # Verify DB connection
+  # Verify DB connection (most important check)
   if ! psql_local -c "SELECT 1" >/dev/null 2>&1; then
     die "Cannot connect to local database on port ${LOCAL_DB_PORT:-54322}"
   fi
