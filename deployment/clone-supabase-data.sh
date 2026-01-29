@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # ============================================
-# SUPABASE DATA CLONE SCRIPT v2.0
+# SUPABASE DATA CLONE SCRIPT v2.1
 # Clone remote Supabase data to local instance
 # Fully unattended, fault-tolerant execution
+# Now includes PostgreSQL enum type sync
 # ============================================
 
 # Don't exit on errors - we handle them gracefully
@@ -380,6 +381,82 @@ sync_auth_tables() {
   info "Auth sync complete - users can now login with their cloud passwords"
 }
 
+# ========= ENUM SYNC =========
+# Sync PostgreSQL enum types from cloud to local
+# This ensures all enum values exist before data sync
+sync_enums() {
+  log "Syncing PostgreSQL enum types from cloud..."
+
+  # Check if we have direct PostgreSQL access
+  if [ -z "${CLOUD_DB_HOST:-}" ] || [ -z "${CLOUD_DB_PASSWORD:-}" ]; then
+    warn "Cannot sync enums without direct PostgreSQL access (CLOUD_DB_HOST/CLOUD_DB_PASSWORD)"
+    warn "Enums may be out of sync - run migrations if you see enum errors"
+    return
+  fi
+
+  # Test PostgreSQL connectivity first
+  if ! timeout 5 bash -c "PGPASSWORD='$CLOUD_DB_PASSWORD' psql -h '$CLOUD_DB_HOST' -p 5432 -U postgres -d postgres -c 'SELECT 1'" >/dev/null 2>&1; then
+    warn "Cannot connect to cloud PostgreSQL for enum sync"
+    warn "Enums may be out of sync - run migrations if you see enum errors"
+    return
+  fi
+
+  # Query all public enums from cloud
+  local enum_sql="
+    SELECT
+      t.typname as enum_name,
+      e.enumlabel as enum_value,
+      e.enumsortorder as sort_order
+    FROM pg_type t
+    JOIN pg_enum e ON t.oid = e.enumtypid
+    JOIN pg_namespace n ON t.typnamespace = n.oid
+    WHERE n.nspname = 'public'
+    ORDER BY t.typname, e.enumsortorder;
+  "
+
+  local cloud_enums
+  cloud_enums=$(PGPASSWORD="$CLOUD_DB_PASSWORD" psql -h "$CLOUD_DB_HOST" -p 5432 \
+    -U postgres -d postgres -t -A -F'|' -c "$enum_sql" 2>/dev/null)
+
+  if [ -z "$cloud_enums" ]; then
+    warn "Could not fetch enums from cloud database"
+    return
+  fi
+
+  info "Adding missing enum values to local database..."
+  echo ""
+
+  # Process each enum value
+  local current_enum=""
+  local sync_count=0
+  local enum_count=0
+
+  while IFS='|' read -r enum_name enum_value sort_order; do
+    [ -z "$enum_name" ] && continue
+
+    # Log when switching to new enum type
+    if [ "$enum_name" != "$current_enum" ]; then
+      [ -n "$current_enum" ] && printf "\n"
+      printf "  %-30s " "$enum_name"
+      current_enum="$enum_name"
+      enum_count=$((enum_count + 1))
+    fi
+
+    # Add value if not exists (PostgreSQL 9.1+)
+    # Note: ADD VALUE IF NOT EXISTS requires PostgreSQL 9.3+
+    local add_sql="ALTER TYPE public.\"$enum_name\" ADD VALUE IF NOT EXISTS '$enum_value';"
+    if psql_local_raw -c "$add_sql" >/dev/null 2>&1; then
+      printf "+"
+      sync_count=$((sync_count + 1))
+    else
+      printf "."
+    fi
+  done <<< "$cloud_enums"
+
+  printf "\n\n"
+  info "Enum sync complete - $enum_count types checked, $sync_count values added"
+}
+
 # ========= DATA SYNC =========
 # Generate INSERT SQL from JSON row using to_entries (maintains order!)
 json_to_insert() {
@@ -574,11 +651,12 @@ EOF
 
 # ========= MAIN =========
 main() {
-  log "Supabase Data Clone Script v2.0"
+  log "Supabase Data Clone Script v2.1"
   log "================================"
 
   check_prerequisites
   sync_auth_tables     # Sync auth FIRST (before profiles which reference auth.users)
+  sync_enums           # Sync enum types BEFORE data (ensures all enum values exist)
   clone_all_tables
   verify_sync
   show_summary
